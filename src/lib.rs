@@ -1,49 +1,40 @@
 //use nom::{branch::alt, bytes::complete::tag, IResult};
 
-use binread::*;
+pub mod pcap;
 
-// from https://wiki.wireshark.org/Development/LibpcapFileFormat
-struct PacketCapture {
-    header: GlobalHeader,
-    records: Vec<Packet>,
+use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsCast;
+
+#[wasm_bindgen]
+extern "C" {
+    pub fn alert(s: &str);
 }
 
-#[derive(BinRead, Debug)]
-//TODO: Find a way to make use of magic number to determine endianness
-#[br(magic = b"\xd4\xc3\xb2\xa1")]
-struct GlobalHeader {
-    version_major: u16,
-    version_minor: u16,
-    thiszone: u32,
-    sigfigs: u32,
-    snaplan: u32,
-    network: u32,
-}
+#[wasm_bindgen]
+pub fn render_pcap(data: &[u8]) -> Result<(), JsValue> {
+    let mut cur = std::io::Cursor::new(data);
+    let pc = pcap::PacketCapture::new(&mut cur);
+    alert(&format!("parsed: {}, pkts", pc.len()));
 
-#[derive(BinRead)]
-struct Packet {
-    ts_sec: u32,
-    ts_usec: u32,
-    incl_len: u32,
-    orig_len: u32,
-    #[br(count = incl_len)]
-    payload: Vec<u8>,
-}
+    let window = web_sys::window().expect("no global `window` exists");
+    let document = window.document().expect("should have a document on window");
+    let body = document.body().expect("document should have a body");
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use io::Cursor;
+    let tbl = document
+        .create_element("table")?
+        .dyn_into::<web_sys::HtmlTableElement>()?;
 
-    #[test]
-    fn parse_global_header() {
-        let mut reader =
-            Cursor::new(b"\xd4\xc3\xb2\xa1\x02\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00");
-        let gh: GlobalHeader = reader.read_le().unwrap();
-        assert_eq!(gh.version_major, 2);
-        assert_eq!(gh.version_minor, 4);
+    body.append_child(&tbl)?;
+
+    for i in 0..pc.len() {
+        let row = tbl
+            .insert_row()?
+            .dyn_into::<web_sys::HtmlTableRowElement>()?;
+        let cell = row
+            .insert_cell()?
+            .dyn_into::<web_sys::HtmlTableCellElement>()?;
+        cell.set_inner_text(&format!("pkt {}", i));
     }
 
-    #[test]
-    fn parse_packet() {}
+    Ok(())
 }

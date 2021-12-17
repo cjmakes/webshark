@@ -5,5 +5,28 @@ edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
 binread = "2.2.0"
+wasm-bindgen = "0.2"
+
+[dependencies.web-sys]
+version = "0.3.4"
+features = [
+  'Blob',
+  'BinaryType',
+  'Document',
+  'Element',
+  'HtmlElement',
+  'Node',
+  'Window',
+  'HtmlTableElement',
+  'HtmlTableRowElement',
+  'HtmlTableCellElement',
+  'HtmlInputElement',
+  'File',
+  'FileList',
+  'FileReader',
+]

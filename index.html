@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>hello-wasm example</title>
+    <style>
+      tr:nth-child(odd){
+        background-color: #AAAAAA;
+      }
+      tr:nth-child(even){
+        background-color: #DDDDDD;
+      }
+    </style>
+  </head>
+  <body>
+    <input id="file-selector" type="file">
+
+    <script type="module">
+      import init, {render_pcap} from "./pkg/webshark.js";
+      init() .then(() => {
+        const reader = new FileReader();
+        reader.addEventListener('load', (event) => {
+          const data = new Uint8Array(event.target.result);
+          render_pcap(data);
+        })
+
+        const fileSelector = document.getElementById('file-selector');
+        fileSelector.addEventListener('change', (event) => {
+            const fileList = event.target.files;
+            reader.readAsArrayBuffer(fileList[0])
+        });
+
+      });
+
+
+    </script>
+  </body>
+</html>
