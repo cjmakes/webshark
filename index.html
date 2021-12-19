@@ -14,25 +14,33 @@
   </head>
   <body>
     <input id="file-selector" type="file">
+    <button id="analyse"> Analyse </button>
+    <input id="filter" type="text">
 
     <script type="module">
-      import init, {render_pcap} from "./pkg/webshark.js";
+      import init, {parse_pcap, filter_pcap} from "./pkg/webshark.js";
       init() .then(() => {
         const reader = new FileReader();
         reader.addEventListener('load', (event) => {
           const data = new Uint8Array(event.target.result);
-          render_pcap(data);
+          const filter = document.getElementById('filter');
+          if (filter.value != ""){
+            filter_pcap(data, filter.value);
+          } else {
+            parse_pcap(data);
+          }
         })
 
-        const fileSelector = document.getElementById('file-selector');
-        fileSelector.addEventListener('change', (event) => {
-            const fileList = event.target.files;
-            reader.readAsArrayBuffer(fileList[0])
+        const btn = document.getElementById('analyse');
+        btn.addEventListener('click', (event) => {
+            const pkts = document.getElementById('packet-view')
+            if (pkts != null) {
+              pkts.remove();
+            }
+            const fileSelector = document.getElementById('file-selector');
+            reader.readAsArrayBuffer(fileSelector.files[0])
         });
-
       });
-
-
     </script>
   </body>
 </html>

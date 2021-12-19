@@ -1,9 +1,16 @@
 use binread::*;
+use std::net::IpAddr;
+
+use pnet_packet::{ethernet, ip, ipv4, udp};
 
 // from https://wiki.wireshark.org/Development/LibpcapFileFormat
 pub struct PacketCapture {
-    header: GlobalHeader,
-    records: Vec<Packet>,
+    pub header: GlobalHeader,
+    pub records: Vec<Packet>,
+}
+
+pub struct PacketCaptureView<'a> {
+    pub records: Vec<&'a Packet>,
 }
 
 impl PacketCapture {
@@ -18,31 +25,56 @@ impl PacketCapture {
         }
         pc
     }
-    pub fn len(&self) -> usize {
-        self.records.len()
+
+    pub fn view(&self) -> PacketCaptureView {
+        PacketCaptureView {
+            records: self.records.iter().collect(),
+        }
+    }
+
+    pub fn filter(&self, query: &str) -> PacketCaptureView {
+        PacketCaptureView {
+            records: self
+                .records
+                .iter()
+                .filter(|pkt| PacketCapture::compile_query(query)(pkt))
+                .collect(),
+        }
+    }
+
+    fn compile_query(query: &str) -> Box<dyn Fn(&Packet) -> bool> {
+        let qip = query.parse::<IpAddr>().unwrap();
+        Box::new(move |pkt| {
+            let l1 = pnet_packet::ethernet::EthernetPacket::new(&pkt.payload).unwrap();
+            let l2 = match l1.get_ethertype() {
+                ethernet::EtherTypes::Ipv4 => ipv4::Ipv4Packet::new(&pkt.payload[14..]).unwrap(),
+                _ => panic!(),
+            };
+            l2.get_source().eq(&qip)
+        })
     }
 }
 
 #[derive(BinRead, Debug)]
 //TODO: Find a way to make use of magic number to determine endianness
 #[br(magic = b"\xd4\xc3\xb2\xa1")]
-struct GlobalHeader {
-    version_major: u16,
-    version_minor: u16,
-    thiszone: u32,
-    sigfigs: u32,
-    snaplan: u32,
-    network: u32,
+pub struct GlobalHeader {
+    pub version_major: u16,
+    pub version_minor: u16,
+    pub thiszone: u32,
+    pub sigfigs: u32,
+    pub snaplan: u32,
+    pub network: u32,
 }
 
 #[derive(BinRead)]
-struct Packet {
-    ts_sec: u32,
-    ts_usec: u32,
-    incl_len: u32,
-    orig_len: u32,
+pub struct Packet {
+    pub ts_sec: u32,
+    pub ts_usec: u32,
+    pub incl_len: u32,
+    pub orig_len: u32,
     #[br(count = incl_len)]
-    payload: Vec<u8>,
+    pub payload: Vec<u8>,
 }
 
 #[cfg(test)]
@@ -63,5 +95,13 @@ mod tests {
         assert_eq!(pc.records[0].ts_sec, 1112172466);
         assert_eq!(pc.records[0].ts_usec, 496046);
         assert_eq!(pc.records[0].payload.len(), 70);
+    }
+
+    #[test]
+    fn test_filter() {
+        let mut reader = File::open("dns.pcap").unwrap();
+        let pc = PacketCapture::new(&mut reader);
+        let fv = pc.filter("192.168.170.8");
+        assert_eq!(fv.records.len(), 14);
     }
 }
