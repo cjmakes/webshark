@@ -1,7 +1,7 @@
 use binread::*;
 use std::net::IpAddr;
 
-use pnet_packet::{ethernet, ip, ipv4, udp};
+use pnet_packet::{ethernet, ipv4};
 
 // from https://wiki.wireshark.org/Development/LibpcapFileFormat
 pub struct PacketCapture {
@@ -32,27 +32,23 @@ impl PacketCapture {
         }
     }
 
-    pub fn filter(&self, query: &str) -> PacketCaptureView {
+    pub fn filter(&self, pred: Box<dyn Fn(&Packet) -> bool>) -> PacketCaptureView {
         PacketCaptureView {
-            records: self
-                .records
-                .iter()
-                .filter(|pkt| PacketCapture::compile_query(query)(pkt))
-                .collect(),
+            records: self.records.iter().filter(|pkt| pred(pkt)).collect(),
         }
     }
+}
 
-    fn compile_query(query: &str) -> Box<dyn Fn(&Packet) -> bool> {
-        let qip = query.parse::<IpAddr>().unwrap();
-        Box::new(move |pkt| {
-            let l1 = pnet_packet::ethernet::EthernetPacket::new(&pkt.payload).unwrap();
-            let l2 = match l1.get_ethertype() {
-                ethernet::EtherTypes::Ipv4 => ipv4::Ipv4Packet::new(&pkt.payload[14..]).unwrap(),
-                _ => panic!(),
-            };
-            l2.get_source().eq(&qip)
-        })
-    }
+pub fn compile_query(query: &str) -> Box<dyn Fn(&Packet) -> bool> {
+    let qip = query.parse::<IpAddr>().unwrap();
+    Box::new(move |pkt| {
+        let l1 = pnet_packet::ethernet::EthernetPacket::new(&pkt.payload).unwrap();
+        let l2 = match l1.get_ethertype() {
+            ethernet::EtherTypes::Ipv4 => ipv4::Ipv4Packet::new(&pkt.payload[14..]).unwrap(),
+            _ => panic!(),
+        };
+        l2.get_source().eq(&qip)
+    })
 }
 
 #[derive(BinRead, Debug)]
@@ -101,7 +97,7 @@ mod tests {
     fn test_filter() {
         let mut reader = File::open("dns.pcap").unwrap();
         let pc = PacketCapture::new(&mut reader);
-        let fv = pc.filter("192.168.170.8");
+        let fv = pc.filter(compile_query("192.168.170.8"));
         assert_eq!(fv.records.len(), 14);
     }
 }

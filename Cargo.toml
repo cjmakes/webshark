@@ -10,8 +10,8 @@ crate-type = ["cdylib"]
 
 [dependencies]
 binread = "2.2.0"
-wasm-bindgen = "0.2"
 pnet_packet = "0.28.0"
+wasm-bindgen = "0.2"
 
 [dependencies.web-sys]
 version = "0.3.4"
@@ -19,10 +19,10 @@ features = [
   'Document',
   'Element',
   'HtmlElement',
-  'Node',
-  'Window',
+  'HtmlInputElement',
+  'HtmlTableCellElement',
   'HtmlTableElement',
   'HtmlTableRowElement',
-  'HtmlTableCellElement',
-  'HtmlInputElement',
+  'Node',
+  'Window',
 ]
