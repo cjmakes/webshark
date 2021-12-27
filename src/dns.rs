@@ -90,13 +90,15 @@ pub struct DnsQuestion {
     pub class: u16,
 }
 
-#[derive(BinRead, PartialEq, Debug)]
+#[derive_binread]
+#[derive(PartialEq, Debug)]
 pub struct DnsResourceRecord {
     #[br(parse_with = until_exclusive(|lbl: &DomainNameLabel| lbl.label.is_empty()))]
     pub labels: Vec<DomainNameLabel>,
     pub typ: u16,
     pub class: u16,
     pub ttl: u32,
+    #[br(temp)]
     pub rd_len: u16,
     #[br(count = rd_len)]
     pub rdata: Vec<u8>,
@@ -106,8 +108,30 @@ pub struct DnsResourceRecord {
 #[derive(PartialEq, Debug)]
 pub struct DomainNameLabel {
     #[br(temp)]
-    len: u8,
-    #[br(count = len)]
+    offet_or_len: u8,
+
+    #[br(if (offet_or_len & 0b11000000 == 0b11000000))]
+    #[br(restore_position)]
+    #[br(seek_before = match offet_or_len & 0b11000000 {
+        0b11000000 => io::SeekFrom::Start((offet_or_len & 0b00111111) as u64),
+        _ => io::SeekFrom::Current(0),
+    })]
+    #[br(temp)]
+    maybe_len: Option<u8>,
+
+    #[br(restore_position)]
+    #[br(seek_before = match offet_or_len & 0b11000000 {
+        0b11000000 => io::SeekFrom::Start(((offet_or_len & 0b00111111) + 1) as u64),
+        _ => io::SeekFrom::Current(0),
+    })]
+    #[br(pad_after( match offet_or_len & 0b11000000 {
+        0b11000000 => 0,
+        _ => offet_or_len as i64,
+    }))]
+    #[br(count = match offet_or_len & 0b11000000 {
+        0b11000000 => maybe_len.unwrap(),
+        _ => offet_or_len,
+    })]
     label: Vec<u8>,
 }
 
@@ -121,15 +145,37 @@ mod tests {
     fn test_dns() {
         let mut reader = File::open("dns.pcap").unwrap();
         let pc = pcap::PacketCapture::new(&mut reader);
+
         let mut reader = std::io::Cursor::new(&pc.records[0].payload[14 + 20 + 8..]);
         let dns = DnsPacket::read(&mut reader).unwrap();
         assert_eq!(dns.id, 0x1032);
         assert_eq!(DnsType::new(dns.questions[0].typ), dns_types::TXT);
         assert_eq!(DnsClass::new(dns.questions[0].class), dns_class::IN);
-
         assert_eq!(dns.questions.len(), 1);
         assert_eq!(
             dns.questions[0].labels,
+            vec![
+                DomainNameLabel {
+                    label: vec![0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65]
+                },
+                DomainNameLabel {
+                    label: vec![0x63, 0x6f, 0x6d]
+                },
+            ]
+        );
+
+        let mut reader = std::io::Cursor::new(&pc.records[1].payload[14 + 20 + 8..]);
+        assert_eq!(pc.records[1].payload[14 + 20 + 8..].len(), 56);
+        let dns = DnsPacket::read(&mut reader).unwrap();
+        assert_eq!(dns.questions.len(), 1);
+        assert_eq!(dns.answers.len(), 1);
+
+        assert_eq!(dns.id, 0x1032);
+        assert_eq!(DnsType::new(dns.answers[0].typ), dns_types::TXT);
+        assert_eq!(DnsClass::new(dns.answers[0].class), dns_class::IN);
+        assert_eq!(dns.answers.len(), 1);
+        assert_eq!(
+            dns.answers[0].labels,
             vec![
                 DomainNameLabel {
                     label: vec![0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65]
