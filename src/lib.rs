@@ -90,9 +90,9 @@ pub fn render_pcap(pc: &pcap::PacketCaptureView) -> Result<(), JsValue> {
             _ => panic!(),
         };
 
-        let mut cur = std::io::Cursor::new(&pkt.payload[offset..]);
+        let cur = std::io::Cursor::new(&pkt.payload[offset..]);
         let l4 = match (l3.get_source(), l3.get_destination()) {
-            (53, _) | (_, 53) => ("DNS", dns::DnsPacketBuilder::parse(&cur.remaining_slice())),
+            (53, _) | (_, 53) => ("DNS", dns::DnsPacket::new(cur.remaining_slice())),
             (_, _) => panic!(),
         };
 
@@ -119,7 +119,7 @@ pub fn render_pcap(pc: &pcap::PacketCaptureView) -> Result<(), JsValue> {
         let cell = row
             .insert_cell()?
             .dyn_into::<web_sys::HtmlTableCellElement>()?;
-        cell.set_inner_text(&format!("{:?}", l4.1));
+        cell.set_inner_text(&format!("{:?}", l4.1.unwrap_or_default()));
     }
 
     Ok(())

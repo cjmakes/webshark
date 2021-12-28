@@ -59,21 +59,11 @@ pub struct DnsPacket {
     pub additionals: Vec<DnsResourceRecord>,
 }
 
-#[derive(Default)]
-pub struct DnsPacketBuilder {
-    id: u16,
-    control: u16,
-    questions: Vec<DnsQuestionBuilder>,
-    answers: Vec<DnsResourceRecordBuilder>,
-    authoritys: Vec<DnsResourceRecordBuilder>,
-    additionals: Vec<DnsResourceRecordBuilder>,
-}
-
 #[derive(PartialEq, Debug)]
 pub struct DnsQuestion {
     pub labels: Vec<String>,
-    pub typ: u16,
-    pub class: u16,
+    pub typ: DnsType,
+    pub class: DnsClass,
 }
 
 #[derive(PartialEq, Default, Debug)]
@@ -86,8 +76,8 @@ struct DnsQuestionBuilder {
 #[derive(PartialEq, Debug)]
 pub struct DnsResourceRecord {
     pub labels: Vec<String>,
-    pub typ: u16,
-    pub class: u16,
+    pub typ: DnsType,
+    pub class: DnsClass,
     pub ttl: u32,
     pub rdata: Vec<u8>,
 }
@@ -103,8 +93,13 @@ pub struct DnsResourceRecordBuilder {
 
 use nom::{bytes::complete::*, multi, number::complete::*, IResult};
 
-impl DnsPacketBuilder {
-    pub fn parse(data: &[u8]) -> IResult<&[u8], DnsPacket> {
+impl DnsPacket {
+    pub fn new(data: &[u8]) -> Option<DnsPacket> {
+        let (_, pkt) = DnsPacket::parse(data).ok()?;
+        Some(pkt)
+    }
+
+    fn parse(data: &[u8]) -> IResult<&[u8], DnsPacket> {
         let (input, id) = be_u16(data)?;
         let (input, control) = be_u16(input)?;
         let (input, qd_count) = be_u16(input)?;
@@ -145,8 +140,8 @@ impl DnsQuestionBuilder {
                 .filter_map(|l| l.deref(input))
                 .flat_map(|v| v.into_iter())
                 .collect(),
-            typ: self.typ,
-            class: self.class,
+            typ: DnsType::new(self.typ),
+            class: DnsClass::new(self.class),
         }
     }
 }
@@ -159,8 +154,8 @@ impl DnsResourceRecordBuilder {
                 .filter_map(|l| l.deref(input))
                 .flat_map(|v| v.into_iter())
                 .collect(),
-            typ: self.typ,
-            class: self.class,
+            typ: DnsType::new(self.typ),
+            class: DnsClass::new(self.class),
             ttl: self.ttl,
             rdata: self.rdata,
         }
@@ -343,7 +338,7 @@ mod tests {
     fn test_build_dns_packet() {
         let input = b"\x10\x32\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\x06\x67\x6f\x6f\x67\x6c\x65\x03\x63\x6f\x6d\x00\x00\x10\x00\x01\xc0\x0c\x00\x10\x00\x01\x00\x00\x01\x0e\x00\x10\x0f\x76\x3d\x73\x70\x66\x31\x20\x70\x74\x72\x20\x3f\x61\x6c\x6c";
 
-        let (input, pkt) = DnsPacketBuilder::parse(input).unwrap();
+        let (input, pkt) = DnsPacket::parse(input).unwrap();
         assert_eq!(input, b"");
         assert_eq!(pkt.answers[0].labels[0], "google".to_owned());
     }
