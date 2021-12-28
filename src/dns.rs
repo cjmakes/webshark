@@ -1,4 +1,4 @@
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DnsType(pub u16);
 pub mod dns_types {
     use super::DnsType;
@@ -32,9 +32,9 @@ impl DnsType {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DnsClass(pub u16);
-pub mod dns_class {
+pub mod dns_classes {
     use super::DnsClass;
 
     pub const IN: DnsClass = DnsClass(1); //the Internet
@@ -49,7 +49,7 @@ impl DnsClass {
     }
 }
 
-#[derive(PartialEq, Default, Debug)]
+#[derive(Default, Debug)]
 pub struct DnsPacket {
     pub id: u16,
     pub control: u16,
@@ -59,21 +59,14 @@ pub struct DnsPacket {
     pub additionals: Vec<DnsResourceRecord>,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(Debug)]
 pub struct DnsQuestion {
     pub labels: Vec<String>,
     pub typ: DnsType,
     pub class: DnsClass,
 }
 
-#[derive(PartialEq, Default, Debug)]
-struct DnsQuestionBuilder {
-    pub labels: Vec<DomainNameLabel>,
-    pub typ: u16,
-    pub class: u16,
-}
-
-#[derive(PartialEq, Debug)]
+#[derive(Debug)]
 pub struct DnsResourceRecord {
     pub labels: Vec<String>,
     pub typ: DnsType,
@@ -82,7 +75,12 @@ pub struct DnsResourceRecord {
     pub rdata: Vec<u8>,
 }
 
-#[derive(PartialEq, Debug)]
+struct DnsQuestionBuilder {
+    pub labels: Vec<DomainNameLabel>,
+    pub typ: u16,
+    pub class: u16,
+}
+
 pub struct DnsResourceRecordBuilder {
     pub labels: Vec<DomainNameLabel>,
     pub typ: u16,
@@ -134,26 +132,17 @@ impl DnsPacket {
 impl DnsQuestionBuilder {
     fn build(self, input: &[u8]) -> DnsQuestion {
         DnsQuestion {
-            labels: self
-                .labels
-                .into_iter()
-                .filter_map(|l| l.deref(input))
-                .flat_map(|v| v.into_iter())
-                .collect(),
+            labels: deref_labels(input, self.labels),
             typ: DnsType::new(self.typ),
             class: DnsClass::new(self.class),
         }
     }
 }
+
 impl DnsResourceRecordBuilder {
     fn build(self, input: &[u8]) -> DnsResourceRecord {
         DnsResourceRecord {
-            labels: self
-                .labels
-                .into_iter()
-                .filter_map(|l| l.deref(input))
-                .flat_map(|v| v.into_iter())
-                .collect(),
+            labels: deref_labels(input, self.labels),
             typ: DnsType::new(self.typ),
             class: DnsClass::new(self.class),
             ttl: self.ttl,
@@ -172,7 +161,16 @@ impl DomainNameLabel {
     }
 }
 
+fn deref_labels(input: &[u8], labels: Vec<DomainNameLabel>) -> Vec<String> {
+    labels
+        .into_iter()
+        .filter_map(|l| l.deref(input))
+        .flat_map(|v| v.into_iter())
+        .collect()
+}
+
 fn offset_to_values(input: &[u8], offset: u16) -> Vec<String> {
+    // TODO: Deal with error better
     let (_, labels) = parse_dns_labels(&input[offset as usize..]).unwrap_or((input, Vec::new()));
 
     labels
@@ -209,14 +207,14 @@ fn parse_dns_resource_record(input: &[u8]) -> IResult<&[u8], DnsResourceRecordBu
 }
 
 fn parse_dns_labels(input: &[u8]) -> IResult<&[u8], Vec<DomainNameLabel>> {
-    let (input, (mut labels, null_or_ptr)) =
-        multi::many_till(parse_dns_label, parse_null_or_pointer)(input)?;
-    labels.push(null_or_ptr);
+    let (input, (mut labels, end)) =
+        multi::many_till(parse_dns_label_item, parse_dns_label_term)(input)?;
+    labels.push(end);
     Ok((input, labels))
 }
 
 // TODO: Replace this with some nom combinators probably
-fn parse_null_or_pointer(input: &[u8]) -> IResult<&[u8], DomainNameLabel> {
+fn parse_dns_label_term(input: &[u8]) -> IResult<&[u8], DomainNameLabel> {
     let (input, len_ptr_null) = be_u8(input)?;
     if len_ptr_null >> 6 == 0b11 {
         let (input, offset2) = be_u8(input)?;
@@ -232,23 +230,11 @@ fn parse_null_or_pointer(input: &[u8]) -> IResult<&[u8], DomainNameLabel> {
     )))
 }
 
-fn parse_dns_label<'a>(input: &'a [u8]) -> IResult<&'a [u8], DomainNameLabel> {
-    let (input, offset_or_len) = be_u8(input)?;
-    match offset_or_len >> 6 {
-        0b00 => {
-            let (input, lbl) = take(offset_or_len)(input)?;
-            Ok((
-                input,
-                DomainNameLabel::Value(std::string::String::from_utf8(lbl.to_owned()).unwrap()),
-            ))
-        }
-        0b11 => {
-            let (input, offset2) = be_u8(input)?;
-            let offset: u16 = (((offset_or_len & 0b00111111) as u16) << 8) | offset2 as u16;
-            Ok((input, DomainNameLabel::Offset(offset)))
-        }
-        _ => Ok((input, DomainNameLabel::Null())),
-    }
+fn parse_dns_label_item(input: &[u8]) -> IResult<&[u8], DomainNameLabel> {
+    let (input, label) = multi::length_data(be_u8)(input)?;
+    // TODO: Deal with string errors
+    let label = DomainNameLabel::Value(std::string::String::from_utf8(label.to_owned()).unwrap());
+    Ok((input, label))
 }
 
 #[derive(Debug, PartialEq)]
@@ -262,32 +248,32 @@ pub enum DomainNameLabel {
 mod tests {
     use super::*;
     #[test]
-    fn test_parse_null_or_pointer_null() {
+    fn test_parse_dns_label_term_null() {
         let input = b"\x00";
-        let (input, term) = parse_null_or_pointer(input).unwrap();
+        let (input, term) = parse_dns_label_term(input).unwrap();
         assert_eq!(input, b"");
         assert_eq!(term, DomainNameLabel::Null());
     }
     #[test]
-    fn test_parse_null_or_pointer_ptr() {
+    fn test_parse_dns_label_term_ptr() {
         let input = b"\xc0\xab";
-        let (input, term) = parse_null_or_pointer(input).unwrap();
+        let (input, term) = parse_dns_label_term(input).unwrap();
         assert_eq!(input, b"");
         assert_eq!(term, DomainNameLabel::Offset(0xab));
     }
     #[test]
-    fn test_parse_domain_label_simple() {
+    fn test_parse_domain_label_item() {
         let input = b"\x03www";
-        let (input, label) = parse_dns_label(input).unwrap();
+        let (input, label) = parse_dns_label_item(input).unwrap();
         assert_eq!(input, b"");
         assert_eq!(label, DomainNameLabel::Value("www".to_owned()));
     }
     #[test]
-    fn test_parse_domain_label_offset() {
+    fn test_parse_domain_labels_offset() {
         let input = b"\xc0\x04";
-        let (input, label) = parse_dns_label(input).unwrap();
+        let (input, label) = parse_dns_labels(input).unwrap();
         assert_eq!(input, b"");
-        assert_eq!(label, DomainNameLabel::Offset(4));
+        assert_eq!(label, vec![DomainNameLabel::Offset(4)]);
     }
     #[test]
     fn test_parse_domain_labels_simple() {
@@ -317,7 +303,7 @@ mod tests {
         );
         assert_eq!(question.labels[1], DomainNameLabel::Value("com".to_owned()));
         assert_eq!(DnsType::new(question.typ), dns_types::TXT);
-        assert_eq!(DnsClass::new(question.class), dns_class::IN);
+        assert_eq!(DnsClass::new(question.class), dns_classes::IN);
     }
 
     #[test]
@@ -328,7 +314,7 @@ mod tests {
         assert_eq!(record.ttl, 270);
         assert_eq!(record.labels[0], DomainNameLabel::Offset(0x000c));
         assert_eq!(DnsType::new(record.typ), dns_types::TXT);
-        assert_eq!(DnsClass::new(record.class), dns_class::IN);
+        assert_eq!(DnsClass::new(record.class), dns_classes::IN);
         assert_eq!(
             record.rdata,
             b"\x0f\x76\x3d\x73\x70\x66\x31\x20\x70\x74\x72\x20\x3f\x61\x6c\x6c"
