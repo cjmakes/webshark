@@ -1,5 +1,3 @@
-use binread::*;
-
 #[derive(Debug, PartialEq)]
 pub struct DnsType(pub u16);
 pub mod dns_types {
@@ -51,139 +49,302 @@ impl DnsClass {
     }
 }
 
-// TODO: Handle compression
-#[derive_binread]
-#[br(big)]
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Default, Debug)]
 pub struct DnsPacket {
     pub id: u16,
     pub control: u16,
-    #[br(temp)]
-    pub qd_count: u16,
-    #[br(temp)]
-    pub an_count: u16,
-    #[br(temp)]
-    pub ns_count: u16,
-    #[br(temp)]
-    pub ar_count: u16,
-    #[br(count = qd_count)]
     pub questions: Vec<DnsQuestion>,
-    #[br(count = an_count)]
     pub answers: Vec<DnsResourceRecord>,
-    #[br(count = ns_count)]
     pub authoritys: Vec<DnsResourceRecord>,
-    #[br(count = ar_count)]
     pub additionals: Vec<DnsResourceRecord>,
 }
 
-impl DnsPacket {
-    pub fn new<R: BinReaderExt>(reader: &mut R) -> Self {
-        Self::read(reader).unwrap()
-    }
+#[derive(Default)]
+pub struct DnsPacketBuilder {
+    id: u16,
+    control: u16,
+    questions: Vec<DnsQuestionBuilder>,
+    answers: Vec<DnsResourceRecordBuilder>,
+    authoritys: Vec<DnsResourceRecordBuilder>,
+    additionals: Vec<DnsResourceRecordBuilder>,
 }
 
-#[derive(BinRead, PartialEq, Debug)]
+#[derive(PartialEq, Debug)]
 pub struct DnsQuestion {
-    #[br(parse_with = until_exclusive(|lbl: &DomainNameLabel| lbl.label.is_empty()))]
+    pub labels: Vec<String>,
+    pub typ: u16,
+    pub class: u16,
+}
+
+#[derive(PartialEq, Default, Debug)]
+struct DnsQuestionBuilder {
     pub labels: Vec<DomainNameLabel>,
     pub typ: u16,
     pub class: u16,
 }
 
-#[derive_binread]
 #[derive(PartialEq, Debug)]
 pub struct DnsResourceRecord {
-    #[br(parse_with = until_exclusive(|lbl: &DomainNameLabel| lbl.label.is_empty()))]
+    pub labels: Vec<String>,
+    pub typ: u16,
+    pub class: u16,
+    pub ttl: u32,
+    pub rdata: Vec<u8>,
+}
+
+#[derive(PartialEq, Debug)]
+pub struct DnsResourceRecordBuilder {
     pub labels: Vec<DomainNameLabel>,
     pub typ: u16,
     pub class: u16,
     pub ttl: u32,
-    #[br(temp)]
-    pub rd_len: u16,
-    #[br(count = rd_len)]
     pub rdata: Vec<u8>,
 }
 
-#[derive_binread]
-#[derive(PartialEq, Debug)]
-pub struct DomainNameLabel {
-    #[br(temp)]
-    offet_or_len: u8,
+use nom::{bytes::complete::*, multi, number::complete::*, IResult};
 
-    #[br(if (offet_or_len & 0b11000000 == 0b11000000))]
-    #[br(restore_position)]
-    #[br(seek_before = match offet_or_len & 0b11000000 {
-        0b11000000 => io::SeekFrom::Start((offet_or_len & 0b00111111) as u64),
-        _ => io::SeekFrom::Current(0),
-    })]
-    #[br(temp)]
-    maybe_len: Option<u8>,
+impl DnsPacketBuilder {
+    pub fn parse(data: &[u8]) -> IResult<&[u8], DnsPacket> {
+        let (input, id) = be_u16(data)?;
+        let (input, control) = be_u16(input)?;
+        let (input, qd_count) = be_u16(input)?;
+        let (input, an_count) = be_u16(input)?;
+        let (input, ns_count) = be_u16(input)?;
+        let (input, ar_count) = be_u16(input)?;
 
-    #[br(restore_position)]
-    #[br(seek_before = match offet_or_len & 0b11000000 {
-        0b11000000 => io::SeekFrom::Start(((offet_or_len & 0b00111111) + 1) as u64),
-        _ => io::SeekFrom::Current(0),
-    })]
-    #[br(pad_after( match offet_or_len & 0b11000000 {
-        0b11000000 => 0,
-        _ => offet_or_len as i64,
-    }))]
-    #[br(count = match offet_or_len & 0b11000000 {
-        0b11000000 => maybe_len.unwrap(),
-        _ => offet_or_len,
-    })]
-    label: Vec<u8>,
+        let (input, questions) = multi::count(parse_dns_question, qd_count.into())(input)?;
+        let (input, answers) = multi::count(parse_dns_resource_record, an_count.into())(input)?;
+        let (input, authoritys) = multi::count(parse_dns_resource_record, ns_count.into())(input)?;
+        let (input, additionals) = multi::count(parse_dns_resource_record, ar_count.into())(input)?;
+
+        let questions = questions.into_iter().map(|q| q.build(data)).collect();
+        let answers = answers.into_iter().map(|rr| rr.build(data)).collect();
+        let authoritys = authoritys.into_iter().map(|rr| rr.build(data)).collect();
+        let additionals = additionals.into_iter().map(|rr| rr.build(data)).collect();
+
+        Ok((
+            input,
+            DnsPacket {
+                id,
+                control,
+                questions,
+                answers,
+                authoritys,
+                additionals,
+            },
+        ))
+    }
+}
+
+impl DnsQuestionBuilder {
+    fn build(self, input: &[u8]) -> DnsQuestion {
+        DnsQuestion {
+            labels: self
+                .labels
+                .into_iter()
+                .filter_map(|l| l.deref(input))
+                .flat_map(|v| v.into_iter())
+                .collect(),
+            typ: self.typ,
+            class: self.class,
+        }
+    }
+}
+impl DnsResourceRecordBuilder {
+    fn build(self, input: &[u8]) -> DnsResourceRecord {
+        DnsResourceRecord {
+            labels: self
+                .labels
+                .into_iter()
+                .filter_map(|l| l.deref(input))
+                .flat_map(|v| v.into_iter())
+                .collect(),
+            typ: self.typ,
+            class: self.class,
+            ttl: self.ttl,
+            rdata: self.rdata,
+        }
+    }
+}
+
+impl DomainNameLabel {
+    fn deref(self, input: &[u8]) -> Option<Vec<String>> {
+        match self {
+            DomainNameLabel::Value(v) => Some(vec![v]),
+            DomainNameLabel::Offset(o) => Some(offset_to_values(input, o)),
+            DomainNameLabel::Null() => None,
+        }
+    }
+}
+
+fn offset_to_values(input: &[u8], offset: u16) -> Vec<String> {
+    let (_, labels) = parse_dns_labels(&input[offset as usize..]).unwrap_or((input, Vec::new()));
+
+    labels
+        .into_iter()
+        .filter_map(|l| l.deref(input))
+        .flat_map(|v| v.into_iter())
+        .collect()
+}
+
+fn parse_dns_question(input: &[u8]) -> IResult<&[u8], DnsQuestionBuilder> {
+    let (input, labels) = parse_dns_labels(input)?;
+    let (input, typ) = be_u16(input)?;
+    let (input, class) = be_u16(input)?;
+    Ok((input, DnsQuestionBuilder { labels, typ, class }))
+}
+
+fn parse_dns_resource_record(input: &[u8]) -> IResult<&[u8], DnsResourceRecordBuilder> {
+    let (input, labels) = parse_dns_labels(input)?;
+    let (input, typ) = be_u16(input)?;
+    let (input, class) = be_u16(input)?;
+    let (input, ttl) = be_u32(input)?;
+    let (input, rdata_len) = be_u16(input)?;
+    let (input, rdata) = take(rdata_len)(input)?;
+    Ok((
+        input,
+        DnsResourceRecordBuilder {
+            labels,
+            typ,
+            class,
+            ttl,
+            rdata: rdata.to_owned(),
+        },
+    ))
+}
+
+fn parse_dns_labels(input: &[u8]) -> IResult<&[u8], Vec<DomainNameLabel>> {
+    let (input, (mut labels, null_or_ptr)) =
+        multi::many_till(parse_dns_label, parse_null_or_pointer)(input)?;
+    labels.push(null_or_ptr);
+    Ok((input, labels))
+}
+
+// TODO: Replace this with some nom combinators probably
+fn parse_null_or_pointer(input: &[u8]) -> IResult<&[u8], DomainNameLabel> {
+    let (input, len_ptr_null) = be_u8(input)?;
+    if len_ptr_null >> 6 == 0b11 {
+        let (input, offset2) = be_u8(input)?;
+        let offset: u16 = (((len_ptr_null & 0b00111111) as u16) << 8) | offset2 as u16;
+        return Ok((input, DomainNameLabel::Offset(offset)));
+    }
+    if len_ptr_null == b'\x00' {
+        return Ok((input, DomainNameLabel::Null()));
+    }
+    Err(nom::Err::Error(nom::error_position!(
+        input,
+        nom::error::ErrorKind::Tag
+    )))
+}
+
+fn parse_dns_label<'a>(input: &'a [u8]) -> IResult<&'a [u8], DomainNameLabel> {
+    let (input, offset_or_len) = be_u8(input)?;
+    match offset_or_len >> 6 {
+        0b00 => {
+            let (input, lbl) = take(offset_or_len)(input)?;
+            Ok((
+                input,
+                DomainNameLabel::Value(std::string::String::from_utf8(lbl.to_owned()).unwrap()),
+            ))
+        }
+        0b11 => {
+            let (input, offset2) = be_u8(input)?;
+            let offset: u16 = (((offset_or_len & 0b00111111) as u16) << 8) | offset2 as u16;
+            Ok((input, DomainNameLabel::Offset(offset)))
+        }
+        _ => Ok((input, DomainNameLabel::Null())),
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum DomainNameLabel {
+    Offset(u16),
+    Value(String),
+    Null(),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pcap;
-    use std::fs::File;
+    #[test]
+    fn test_parse_null_or_pointer_null() {
+        let input = b"\x00";
+        let (input, term) = parse_null_or_pointer(input).unwrap();
+        assert_eq!(input, b"");
+        assert_eq!(term, DomainNameLabel::Null());
+    }
+    #[test]
+    fn test_parse_null_or_pointer_ptr() {
+        let input = b"\xc0\xab";
+        let (input, term) = parse_null_or_pointer(input).unwrap();
+        assert_eq!(input, b"");
+        assert_eq!(term, DomainNameLabel::Offset(0xab));
+    }
+    #[test]
+    fn test_parse_domain_label_simple() {
+        let input = b"\x03www";
+        let (input, label) = parse_dns_label(input).unwrap();
+        assert_eq!(input, b"");
+        assert_eq!(label, DomainNameLabel::Value("www".to_owned()));
+    }
+    #[test]
+    fn test_parse_domain_label_offset() {
+        let input = b"\xc0\x04";
+        let (input, label) = parse_dns_label(input).unwrap();
+        assert_eq!(input, b"");
+        assert_eq!(label, DomainNameLabel::Offset(4));
+    }
+    #[test]
+    fn test_parse_domain_labels_simple() {
+        let input = b"\x03www\x0acloudflare\x03com\x00";
+        let (input, labels) = parse_dns_labels(input).unwrap();
+        assert_eq!(input, b"");
+        assert_eq!(labels[0], DomainNameLabel::Value("www".to_owned()));
+        assert_eq!(labels[1], DomainNameLabel::Value("cloudflare".to_owned()));
+        assert_eq!(labels[2], DomainNameLabel::Value("com".to_owned()));
+    }
+    #[test]
+    fn test_parse_domain_labels_mixed() {
+        let input = b"\x03www\xc0\xaa";
+        let (input, labels) = parse_dns_labels(input).unwrap();
+        assert_eq!(input, b"");
+        assert_eq!(labels[0], DomainNameLabel::Value("www".to_owned()));
+        assert_eq!(labels[1], DomainNameLabel::Offset(0xaa));
+    }
+    #[test]
+    fn test_parse_dns_question() {
+        let input = b"\x06\x67\x6f\x6f\x67\x6c\x65\x03\x63\x6f\x6d\x00\x00\x10\x00\x01";
+        let (input, question) = parse_dns_question(input).unwrap();
+        assert_eq!(input, b"");
+        assert_eq!(
+            question.labels[0],
+            DomainNameLabel::Value("google".to_owned())
+        );
+        assert_eq!(question.labels[1], DomainNameLabel::Value("com".to_owned()));
+        assert_eq!(DnsType::new(question.typ), dns_types::TXT);
+        assert_eq!(DnsClass::new(question.class), dns_class::IN);
+    }
 
     #[test]
-    fn test_dns() {
-        let mut reader = File::open("dns.pcap").unwrap();
-        let pc = pcap::PacketCapture::new(&mut reader);
-
-        let mut reader = std::io::Cursor::new(&pc.records[0].payload[14 + 20 + 8..]);
-        let dns = DnsPacket::read(&mut reader).unwrap();
-        assert_eq!(dns.id, 0x1032);
-        assert_eq!(DnsType::new(dns.questions[0].typ), dns_types::TXT);
-        assert_eq!(DnsClass::new(dns.questions[0].class), dns_class::IN);
-        assert_eq!(dns.questions.len(), 1);
+    fn test_parse_dns_resource_record() {
+        let input = b"\xc0\x0c\x00\x10\x00\x01\x00\x00\x01\x0e\x00\x10\x0f\x76\x3d\x73\x70\x66\x31\x20\x70\x74\x72\x20\x3f\x61\x6c\x6c";
+        let (input, record) = parse_dns_resource_record(input).unwrap();
+        assert_eq!(input, b"");
+        assert_eq!(record.ttl, 270);
+        assert_eq!(record.labels[0], DomainNameLabel::Offset(0x000c));
+        assert_eq!(DnsType::new(record.typ), dns_types::TXT);
+        assert_eq!(DnsClass::new(record.class), dns_class::IN);
         assert_eq!(
-            dns.questions[0].labels,
-            vec![
-                DomainNameLabel {
-                    label: vec![0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65]
-                },
-                DomainNameLabel {
-                    label: vec![0x63, 0x6f, 0x6d]
-                },
-            ]
+            record.rdata,
+            b"\x0f\x76\x3d\x73\x70\x66\x31\x20\x70\x74\x72\x20\x3f\x61\x6c\x6c"
         );
+    }
+    #[test]
+    fn test_build_dns_packet() {
+        let input = b"\x10\x32\x81\x80\x00\x01\x00\x01\x00\x00\x00\x00\x06\x67\x6f\x6f\x67\x6c\x65\x03\x63\x6f\x6d\x00\x00\x10\x00\x01\xc0\x0c\x00\x10\x00\x01\x00\x00\x01\x0e\x00\x10\x0f\x76\x3d\x73\x70\x66\x31\x20\x70\x74\x72\x20\x3f\x61\x6c\x6c";
 
-        let mut reader = std::io::Cursor::new(&pc.records[1].payload[14 + 20 + 8..]);
-        assert_eq!(pc.records[1].payload[14 + 20 + 8..].len(), 56);
-        let dns = DnsPacket::read(&mut reader).unwrap();
-        assert_eq!(dns.questions.len(), 1);
-        assert_eq!(dns.answers.len(), 1);
-
-        assert_eq!(dns.id, 0x1032);
-        assert_eq!(DnsType::new(dns.answers[0].typ), dns_types::TXT);
-        assert_eq!(DnsClass::new(dns.answers[0].class), dns_class::IN);
-        assert_eq!(dns.answers.len(), 1);
-        assert_eq!(
-            dns.answers[0].labels,
-            vec![
-                DomainNameLabel {
-                    label: vec![0x67, 0x6f, 0x6f, 0x67, 0x6c, 0x65]
-                },
-                DomainNameLabel {
-                    label: vec![0x63, 0x6f, 0x6d]
-                },
-            ]
-        );
+        let (input, pkt) = DnsPacketBuilder::parse(input).unwrap();
+        assert_eq!(input, b"");
+        assert_eq!(pkt.answers[0].labels[0], "google".to_owned());
     }
 }

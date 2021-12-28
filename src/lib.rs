@@ -1,4 +1,4 @@
-//use nom::{branch::alt, bytes::complete::tag, IResult};
+#![feature(cursor_remaining)]
 
 pub mod dns;
 pub mod pcap;
@@ -92,7 +92,7 @@ pub fn render_pcap(pc: &pcap::PacketCaptureView) -> Result<(), JsValue> {
 
         let mut cur = std::io::Cursor::new(&pkt.payload[offset..]);
         let l4 = match (l3.get_source(), l3.get_destination()) {
-            (53, _) | (_, 53) => ("DNS", dns::DnsPacket::new(&mut cur)),
+            (53, _) | (_, 53) => ("DNS", dns::DnsPacketBuilder::parse(&cur.remaining_slice())),
             (_, _) => panic!(),
         };
 
