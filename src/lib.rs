@@ -1,9 +1,6 @@
-#![feature(cursor_remaining)]
-
 pub mod dns;
 pub mod pcap;
 
-use pnet_packet::{ethernet, ip, ipv4, udp};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -46,80 +43,35 @@ pub fn render_pcap(pc: &pcap::PacketCaptureView) -> Result<(), JsValue> {
     let row = tbl
         .insert_row()?
         .dyn_into::<web_sys::HtmlTableRowElement>()?;
-    let cell = row
-        .insert_cell()?
-        .dyn_into::<web_sys::HtmlTableCellElement>()?;
-    cell.set_inner_text("No.");
-    let cell = row
-        .insert_cell()?
-        .dyn_into::<web_sys::HtmlTableCellElement>()?;
-    cell.set_inner_text("source");
-    let cell = row
-        .insert_cell()?
-        .dyn_into::<web_sys::HtmlTableCellElement>()?;
-    cell.set_inner_text("destination");
 
-    for (i, pkt) in pc.records.iter().enumerate() {
+    use pcap::Fields;
+    let cols = vec![
+        Fields::SrcIpAddr(),
+        Fields::DstIpAddr(),
+        Fields::L3Src(),
+        Fields::L3Dst(),
+        Fields::L4Name(),
+        Fields::L4Info(),
+    ];
+
+    for f in &cols {
+        let cell = row
+            .insert_cell()?
+            .dyn_into::<web_sys::HtmlTableCellElement>()?;
+        cell.set_inner_text(f.name());
+    }
+
+    for pkt in pc.records.iter() {
         let row = tbl
             .insert_row()?
             .dyn_into::<web_sys::HtmlTableRowElement>()?;
-        let cell = row
-            .insert_cell()?
-            .dyn_into::<web_sys::HtmlTableCellElement>()?;
-        cell.set_inner_text(&format!("{}", i));
-
-        let mut offset = 0;
-        let l1 = pnet_packet::ethernet::EthernetPacket::new(&pkt.payload).unwrap();
-        offset += ethernet::EthernetPacket::minimum_packet_size();
-
-        let l2 = match l1.get_ethertype() {
-            ethernet::EtherTypes::Ipv4 => {
-                let ret = ipv4::Ipv4Packet::new(&pkt.payload[offset..]).unwrap();
-                offset += ipv4::Ipv4Packet::minimum_packet_size();
-                ret
-            }
-            _ => panic!(),
-        };
-
-        let l3 = match l2.get_next_level_protocol() {
-            ip::IpNextHeaderProtocols::Udp => {
-                let ret = udp::UdpPacket::new(&pkt.payload[offset..]).unwrap();
-                offset += udp::UdpPacket::minimum_packet_size();
-                ret
-            }
-            _ => panic!(),
-        };
-
-        let cur = std::io::Cursor::new(&pkt.payload[offset..]);
-        let l4 = match (l3.get_source(), l3.get_destination()) {
-            (53, _) | (_, 53) => ("DNS", dns::DnsPacket::new(cur.remaining_slice())),
-            (_, _) => panic!(),
-        };
-
-        let cell = row
-            .insert_cell()?
-            .dyn_into::<web_sys::HtmlTableCellElement>()?;
-        cell.set_inner_text(&format!("{:?}", l2.get_source()));
-        let cell = row
-            .insert_cell()?
-            .dyn_into::<web_sys::HtmlTableCellElement>()?;
-        cell.set_inner_text(&format!("{:?}", l2.get_destination()));
-        let cell = row
-            .insert_cell()?
-            .dyn_into::<web_sys::HtmlTableCellElement>()?;
-        cell.set_inner_text(&format!("{:?}", l3.get_source()));
-        let cell = row
-            .insert_cell()?
-            .dyn_into::<web_sys::HtmlTableCellElement>()?;
-        cell.set_inner_text(&format!("{:?}", l3.get_destination()));
-        let cell = row
-            .insert_cell()?
-            .dyn_into::<web_sys::HtmlTableCellElement>()?;
-        cell.set_inner_text(l4.0);
-        let cell = row
-            .insert_cell()?
-            .dyn_into::<web_sys::HtmlTableCellElement>()?;
-        cell.set_inner_text(&format!("{:?}", l4.1.unwrap_or_default()));
+        for f in &cols {
+            let pr = pcap::ParsedRecord::new(pkt);
+            let cell = row
+                .insert_cell()?
+                .dyn_into::<web_sys::HtmlTableCellElement>()?;
+            cell.set_inner_text(&pr.get_field(f).unwrap_or_else(|| "".to_owned()));
+        }
     }
 
     Ok(())
