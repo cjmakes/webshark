@@ -3,7 +3,6 @@ use std::net::IpAddr;
 
 use pnet_packet::{ethernet, icmp, ip, ipv4, tcp, udp};
 
-// from https://wiki.wireshark.org/Development/LibpcapFileFormat
 pub struct PacketCapture {
     pub header: GlobalHeader,
     pub records: Vec<Record>,
@@ -77,13 +76,14 @@ pub struct ParsedRecord<'a> {
     l1: pnet_packet::ethernet::EthernetPacket<'a>,
     l2: pnet_packet::ipv4::Ipv4Packet<'a>,
     l3: L3Packet<'a>,
-    l4: L4Packet,
+    l4: L4Packet<'a>,
 }
 
 enum L3Packet<'a> {
     Udp(pnet_packet::udp::UdpPacket<'a>),
     Tcp(pnet_packet::tcp::TcpPacket<'a>),
     Icmp(pnet_packet::icmp::IcmpPacket<'a>),
+    Unknown(&'a [u8]),
 }
 
 impl<'a> L3Packet<'a> {
@@ -92,6 +92,7 @@ impl<'a> L3Packet<'a> {
             L3Packet::Tcp(p) => Some(p.get_source()),
             L3Packet::Udp(p) => Some(p.get_source()),
             L3Packet::Icmp(_) => None,
+            L3Packet::Unknown(_) => None,
         }
     }
     fn get_destination(&self) -> Option<u16> {
@@ -99,18 +100,23 @@ impl<'a> L3Packet<'a> {
             L3Packet::Tcp(p) => Some(p.get_destination()),
             L3Packet::Udp(p) => Some(p.get_destination()),
             L3Packet::Icmp(_) => None,
+            L3Packet::Unknown(_) => None,
         }
     }
 }
 
+use crate::dns;
+
 #[derive(Debug)]
-enum L4Packet {
-    Dns(crate::dns::DnsPacket),
+enum L4Packet<'a> {
+    Dns(dns::DnsPacket),
+    Unknown(&'a [u8]),
 }
-impl L4Packet {
+impl<'a> L4Packet<'a> {
     fn get_name(&self) -> &str {
         match self {
             L4Packet::Dns(_) => "DNS",
+            L4Packet::Unknown(_) => "Unknown",
         }
     }
 }
@@ -176,14 +182,14 @@ impl<'a> ParsedRecord<'a> {
                 offset += icmp::IcmpPacket::minimum_packet_size();
                 L3Packet::Icmp(ret)
             }
-            _ => panic!(),
+            _ => L3Packet::Unknown(&record.payload[offset..]),
         };
 
         let l4 = match (&l3, l3.get_source(), l3.get_destination()) {
             (&L3Packet::Udp(_), Some(53), _) | (L3Packet::Udp(_), _, Some(53)) => {
                 L4Packet::Dns(crate::dns::DnsPacket::new(&record.payload[offset..]).unwrap())
             }
-            (_, _, _) => panic!(),
+            (_, _, _) => L4Packet::Unknown(&record.payload[offset..]),
         };
         Self { l1, l2, l3, l4 }
     }
