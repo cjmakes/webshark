@@ -73,34 +73,43 @@ pub struct Record {
 }
 
 pub struct ParsedRecord<'a> {
-    l1: pnet_packet::ethernet::EthernetPacket<'a>,
-    l2: pnet_packet::ipv4::Ipv4Packet<'a>,
-    l3: L3Packet<'a>,
+    l2: pnet_packet::ethernet::EthernetPacket<'a>,
+    l3: pnet_packet::ipv4::Ipv4Packet<'a>,
     l4: L4Packet<'a>,
+    l7: L7Packet<'a>,
 }
 
-enum L3Packet<'a> {
+#[derive(Debug)]
+enum L4Packet<'a> {
     Udp(pnet_packet::udp::UdpPacket<'a>),
     Tcp(pnet_packet::tcp::TcpPacket<'a>),
     Icmp(pnet_packet::icmp::IcmpPacket<'a>),
     Unknown(&'a [u8]),
 }
 
-impl<'a> L3Packet<'a> {
+impl<'a> L4Packet<'a> {
     fn get_source(&self) -> Option<u16> {
         match self {
-            L3Packet::Tcp(p) => Some(p.get_source()),
-            L3Packet::Udp(p) => Some(p.get_source()),
-            L3Packet::Icmp(_) => None,
-            L3Packet::Unknown(_) => None,
+            L4Packet::Tcp(p) => Some(p.get_source()),
+            L4Packet::Udp(p) => Some(p.get_source()),
+            L4Packet::Icmp(_) => None,
+            L4Packet::Unknown(_) => None,
         }
     }
     fn get_destination(&self) -> Option<u16> {
         match self {
-            L3Packet::Tcp(p) => Some(p.get_destination()),
-            L3Packet::Udp(p) => Some(p.get_destination()),
-            L3Packet::Icmp(_) => None,
-            L3Packet::Unknown(_) => None,
+            L4Packet::Tcp(p) => Some(p.get_destination()),
+            L4Packet::Udp(p) => Some(p.get_destination()),
+            L4Packet::Icmp(_) => None,
+            L4Packet::Unknown(_) => None,
+        }
+    }
+    fn get_name(&self) -> &str {
+        match self {
+            L4Packet::Tcp(_) => "TCP",
+            L4Packet::Udp(_) => "UDP",
+            L4Packet::Icmp(_) => "ICMP",
+            L4Packet::Unknown(_) => "Unknown",
         }
     }
 }
@@ -108,15 +117,15 @@ impl<'a> L3Packet<'a> {
 use crate::dns;
 
 #[derive(Debug)]
-enum L4Packet<'a> {
+enum L7Packet<'a> {
     Dns(dns::DnsPacket),
     Unknown(&'a [u8]),
 }
-impl<'a> L4Packet<'a> {
+impl<'a> L7Packet<'a> {
     fn get_name(&self) -> &str {
         match self {
-            L4Packet::Dns(_) => "DNS",
-            L4Packet::Unknown(_) => "Unknown",
+            L7Packet::Dns(_) => "DNS",
+            L7Packet::Unknown(_) => "Unknown",
         }
     }
 }
@@ -126,10 +135,10 @@ pub enum Fields {
     DstMacAddr(),
     SrcIpAddr(),
     DstIpAddr(),
-    L3Src(),
-    L3Dst(),
-    L4Name(),
-    L4Info(),
+    L4Src(),
+    L4Dst(),
+    Info(),
+    Protocol(),
 }
 
 impl Fields {
@@ -139,10 +148,10 @@ impl Fields {
             Fields::DstMacAddr() => "DstMacAddr",
             Fields::SrcIpAddr() => "SrcIpAddr",
             Fields::DstIpAddr() => "DstIpAddr",
-            Fields::L3Src() => "L3Src",
-            Fields::L3Dst() => "L3Dst",
-            Fields::L4Name() => "L4Name",
-            Fields::L4Info() => "L4Info",
+            Fields::L4Src() => "L4Src",
+            Fields::L4Dst() => "L4Dst",
+            Fields::Info() => "Info",
+            Fields::Protocol() => "Protocol",
         }
     }
 }
@@ -154,10 +163,10 @@ pub trait Field {
 impl<'a> ParsedRecord<'a> {
     pub fn new(record: &'a Record) -> Self {
         let mut offset = 0;
-        let l1 = ethernet::EthernetPacket::new(&record.payload).unwrap();
+        let l2 = ethernet::EthernetPacket::new(&record.payload).unwrap();
         offset += ethernet::EthernetPacket::minimum_packet_size();
 
-        let l2 = match l1.get_ethertype() {
+        let l3 = match l2.get_ethertype() {
             ethernet::EtherTypes::Ipv4 => {
                 let ret = ipv4::Ipv4Packet::new(&record.payload[offset..]).unwrap();
                 offset += ipv4::Ipv4Packet::minimum_packet_size();
@@ -166,44 +175,53 @@ impl<'a> ParsedRecord<'a> {
             _ => panic!(),
         };
 
-        let l3 = match l2.get_next_level_protocol() {
+        let l4 = match l3.get_next_level_protocol() {
             ip::IpNextHeaderProtocols::Udp => {
                 let ret = udp::UdpPacket::new(&record.payload[offset..]).unwrap();
                 offset += udp::UdpPacket::minimum_packet_size();
-                L3Packet::Udp(ret)
+                L4Packet::Udp(ret)
             }
             ip::IpNextHeaderProtocols::Tcp => {
                 let ret = tcp::TcpPacket::new(&record.payload[offset..]).unwrap();
                 offset += tcp::TcpPacket::minimum_packet_size();
-                L3Packet::Tcp(ret)
+                L4Packet::Tcp(ret)
             }
             ip::IpNextHeaderProtocols::Icmp => {
                 let ret = icmp::IcmpPacket::new(&record.payload[offset..]).unwrap();
                 offset += icmp::IcmpPacket::minimum_packet_size();
-                L3Packet::Icmp(ret)
+                L4Packet::Icmp(ret)
             }
-            _ => L3Packet::Unknown(&record.payload[offset..]),
+            _ => L4Packet::Unknown(&record.payload[offset..]),
         };
 
-        let l4 = match (&l3, l3.get_source(), l3.get_destination()) {
-            (&L3Packet::Udp(_), Some(53), _) | (L3Packet::Udp(_), _, Some(53)) => {
-                L4Packet::Dns(crate::dns::DnsPacket::new(&record.payload[offset..]).unwrap())
+        let l7 = match (&l4, l4.get_source(), l4.get_destination()) {
+            (&L4Packet::Udp(_), Some(53), _) | (L4Packet::Udp(_), _, Some(53)) => {
+                L7Packet::Dns(crate::dns::DnsPacket::new(&record.payload[offset..]).unwrap())
             }
-            (_, _, _) => L4Packet::Unknown(&record.payload[offset..]),
+            (_, _, _) => L7Packet::Unknown(&record.payload[offset..]),
         };
-        Self { l1, l2, l3, l4 }
+        Self { l2, l3, l4, l7 }
     }
 
     pub fn get_field(&self, field: &Fields) -> Option<String> {
         match field {
-            Fields::SrcMacAddr() => Some(self.l1.get_source().to_string()),
-            Fields::DstMacAddr() => Some(self.l1.get_destination().to_string()),
-            Fields::SrcIpAddr() => Some(self.l2.get_source().to_string()),
-            Fields::DstIpAddr() => Some(self.l2.get_source().to_string()),
-            Fields::L3Src() => self.l3.get_source().map(|p| p.to_string()),
-            Fields::L3Dst() => self.l3.get_destination().map(|p| p.to_string()),
-            Fields::L4Name() => Some(self.l4.get_name().to_owned()),
-            Fields::L4Info() => Some(format!("{:?}", self.l4)),
+            Fields::SrcMacAddr() => Some(self.l2.get_source().to_string()),
+            Fields::DstMacAddr() => Some(self.l2.get_destination().to_string()),
+            Fields::SrcIpAddr() => Some(self.l3.get_source().to_string()),
+            Fields::DstIpAddr() => Some(self.l3.get_source().to_string()),
+            Fields::L4Src() => self.l4.get_source().map(|p| p.to_string()),
+            Fields::L4Dst() => self.l4.get_destination().map(|p| p.to_string()),
+            Fields::Info() => Some(match self.l7 {
+                L7Packet::Unknown(_) => format!("{:?}", self.l4),
+                _ => format!("{:?}", self.l7),
+            }),
+            Fields::Protocol() => Some(
+                match self.l7 {
+                    L7Packet::Unknown(_) => self.l4.get_name(),
+                    _ => self.l7.get_name(),
+                }
+                .to_owned(),
+            ),
         }
     }
 }

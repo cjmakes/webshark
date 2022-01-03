@@ -48,10 +48,10 @@ pub fn render_pcap(pc: &pcap::PacketCaptureView) -> Result<(), JsValue> {
     let cols = vec![
         Fields::SrcIpAddr(),
         Fields::DstIpAddr(),
-        Fields::L3Src(),
-        Fields::L3Dst(),
-        Fields::L4Name(),
-        Fields::L4Info(),
+        Fields::L4Src(),
+        Fields::L4Dst(),
+        Fields::Protocol(),
+        Fields::Info(),
     ];
 
     for f in &cols {
